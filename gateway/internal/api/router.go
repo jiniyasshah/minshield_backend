@@ -1,6 +1,7 @@
 package api
 
 import (
+	"net"
 	"net/http"
 
 	"web-app-firewall-ml-detection/internal/config"
@@ -15,51 +16,60 @@ func NewRouter(
 	domainHandler *DomainHandler,
 	ruleHandler *RuleHandler,
 	dnsHandler *DNSHandler,
-	logHandler *LogHandler,       
-	systemHandler *SystemHandler, 
+	logHandler *LogHandler,
+	systemHandler *SystemHandler,
 ) http.Handler {
 
-	mux := http.NewServeMux()
-
-	// --- WAF Traffic (Root) ---
-	mux.Handle("/", wafHandler)
+	apiMux := http.NewServeMux()
 
 	// --- Auth Routes ---
-	mux.HandleFunc("/api/auth/register", authHandler.Register)
-	mux.HandleFunc("/api/auth/login", authHandler.Login)
-	mux.HandleFunc("/api/auth/logout", authHandler.Logout)
-	mux.HandleFunc("/api/system/status", systemHandler.GetSystemStatus)
-	mux.HandleFunc("/api/system/traffic-history", authHandler.Middleware(systemHandler.GetTrafficHistory))
+	apiMux.HandleFunc("/api/auth/register", authHandler.Register)
+	apiMux.HandleFunc("/api/auth/login", authHandler.Login)
+	apiMux.HandleFunc("/api/auth/logout", authHandler.Logout)
+	apiMux.HandleFunc("/api/system/status", systemHandler.GetSystemStatus)
+	apiMux.HandleFunc("/api/system/traffic-history", authHandler.Middleware(systemHandler.GetTrafficHistory))
 
-
-	mux.HandleFunc("/api/auth/check", authHandler.Middleware(authHandler.CheckAuth))
-	mux.HandleFunc("/api/auth/verify", authHandler.VerifyEmail)
-	mux.HandleFunc("/api/auth/email/update", authHandler.Middleware(authHandler.RequestEmailChange))
-    mux.HandleFunc("/api/auth/email/verify-change", authHandler.VerifyEmailChange)
-	mux.HandleFunc("/api/auth/password/update", authHandler.Middleware(authHandler.UpdatePassword))
-	mux.HandleFunc("/api/auth/password/forgot", authHandler.ForgotPassword) // Public
-	mux.HandleFunc("/api/auth/password/reset", authHandler.ResetPassword)   // Public
-
+	apiMux.HandleFunc("/api/auth/check", authHandler.Middleware(authHandler.CheckAuth))
+	apiMux.HandleFunc("/api/auth/verify", authHandler.VerifyEmail)
+	apiMux.HandleFunc("/api/auth/email/update", authHandler.Middleware(authHandler.RequestEmailChange))
+	apiMux.HandleFunc("/api/auth/email/verify-change", authHandler.VerifyEmailChange)
+	apiMux.HandleFunc("/api/auth/password/update", authHandler.Middleware(authHandler.UpdatePassword))
+	apiMux.HandleFunc("/api/auth/password/forgot", authHandler.ForgotPassword)
+	apiMux.HandleFunc("/api/auth/password/reset", authHandler.ResetPassword)
 
 	// --- Domain Routes ---
-	mux.HandleFunc("/api/domains", authHandler.Middleware(domainHandler.ListDomains))
-	mux.HandleFunc("/api/domains/add", authHandler.Middleware(domainHandler.AddDomain))
-	mux.HandleFunc("/api/domains/verify", authHandler.Middleware(domainHandler.Verify))
-	mux.HandleFunc("/api/domains/delete", authHandler.Middleware(domainHandler.DeleteDomain))
+	apiMux.HandleFunc("/api/domains", authHandler.Middleware(domainHandler.ListDomains))
+	apiMux.HandleFunc("/api/domains/add", authHandler.Middleware(domainHandler.AddDomain))
+	apiMux.HandleFunc("/api/domains/verify", authHandler.Middleware(domainHandler.Verify))
+	apiMux.HandleFunc("/api/domains/delete", authHandler.Middleware(domainHandler.DeleteDomain))
 
 	// --- DNS Routes ---
-	mux.HandleFunc("/api/dns/records", authHandler.Middleware(dnsHandler.ManageRecords))
+	apiMux.HandleFunc("/api/dns/records", authHandler.Middleware(dnsHandler.ManageRecords))
 
 	// --- Rule Routes ---
-	mux.HandleFunc("/api/rules/global", authHandler.Middleware(ruleHandler.GetGlobal))
-	mux.HandleFunc("/api/rules/custom", authHandler.Middleware(ruleHandler.GetCustom))
-	mux.HandleFunc("/api/rules/custom/add", authHandler.Middleware(ruleHandler.AddCustom))
-	mux.HandleFunc("/api/rules/toggle", authHandler.Middleware(ruleHandler.Toggle))
+	apiMux.HandleFunc("/api/rules/global", authHandler.Middleware(ruleHandler.GetGlobal))
+	apiMux.HandleFunc("/api/rules/custom", authHandler.Middleware(ruleHandler.GetCustom))
+	apiMux.HandleFunc("/api/rules/custom/add", authHandler.Middleware(ruleHandler.AddCustom))
+	apiMux.HandleFunc("/api/rules/toggle", authHandler.Middleware(ruleHandler.Toggle))
 
 	// --- Log Routes ---
-	mux.HandleFunc("/api/logs", authHandler.Middleware(logHandler.GetLogs))
-	mux.HandleFunc("/api/logs/stream", logHandler.SSEHandler) // SSE usually doesn't use standard Auth header middleware
+	apiMux.HandleFunc("/api/logs", authHandler.Middleware(logHandler.GetLogs))
+	apiMux.HandleFunc("/api/logs/stream", logHandler.SSEHandler)
 
+	// ------- HOST-BASED DISPATCH -------
+	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
 
-	return middleware.CORS(cfg)(mux)
+		switch host {
+		case "api.minishield.tech", "minishield.tech", "www.minishield.tech":
+			apiMux.ServeHTTP(w, r) 
+		default:
+			wafHandler.ServeHTTP(w, r) // customer traffic → WAF proxy
+		}
+	})
+
+	return middleware.CORS(cfg)(root)
 }
